@@ -84,22 +84,7 @@ class SignUpSerializer(serializers.ModelSerializer):
     
         return user
     
-    def to_representation(self, instance):
-        request = self.context.get('request')
-        user_agent_hash = get_user_agent_hash(request) if request else None
-
-        refresh = CustomRefreshToken.for_user(instance, user_agent_hash=user_agent_hash)
-        
-        return {
-            'user': {
-                'id': instance.id,
-                'full_name': instance.full_name,
-                'email': instance.email,
-                'role': instance.role,
-            },
-            'refresh': str(refresh),
-            'access': str(refresh.access_token)
-        }
+  
 
 
     
@@ -114,6 +99,10 @@ class SignInSerializer(serializers.Serializer):
     def validate(self, attrs):
         password = attrs.get('password')
         user = User.objects.filter(email=attrs['email']).first()
+
+        if not user.is_otp_verified:
+              raise serializers.ValidationError({'email': 'Email not verified. Please verify your email first.'})
+        
         if not user:
            raise serializers.ValidationError({'email': 'User with this email does not exist.'})
         if not user.check_password(password):
@@ -338,11 +327,36 @@ class VerifyOTPSerializer(serializers.Serializer):
         self.user = user
         self.otp_obj = otp_obj
         return data
+    
+
+    def to_representation(self, instance):
+        user = self.user
+        request = self.context.get('request')
+
+        user_agent_hash = get_user_agent_hash(request) if request else None
+
+        refresh = CustomRefreshToken.for_user(
+            user,
+            user_agent_hash=user_agent_hash
+        )
+
+        return {
+            'user': {
+                'id': user.id,
+                'email': user.email,
+                'role': user.role,
+            },
+            'refresh': str(refresh),
+            'access': str(refresh.access_token),
+        }
+
 
     def save(self):
         self.otp_obj.is_verify = True
+        self.user.is_otp_verified = True
         self.otp_obj.attempts = 0
         self.otp_obj.save()
+        self.user.save()
 
 class ResetPasswordSerializer(serializers.Serializer):
     email = serializers.EmailField()
