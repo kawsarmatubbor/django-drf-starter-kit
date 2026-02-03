@@ -100,11 +100,13 @@ class SignInSerializer(serializers.Serializer):
         password = attrs.get('password')
         user = User.objects.filter(email=attrs['email']).first()
 
-        if not user.is_otp_verified:
-              raise serializers.ValidationError({'email': 'Email not verified. Please verify your email first.'})
         
         if not user:
            raise serializers.ValidationError({'email': 'User with this email does not exist.'})
+        
+        if not user.is_otp_verified:
+              raise serializers.ValidationError({'email': 'Email not verified. Please verify your email first.'})
+
         if not user.check_password(password):
             raise serializers.ValidationError({'password': 'Invalid password.'})
         self.user = user
