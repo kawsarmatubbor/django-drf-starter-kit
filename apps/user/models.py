@@ -16,10 +16,13 @@ class User(AbstractBaseUser, PermissionsMixin):
 
     email = models.EmailField(_("email address"), unique=True)
     avatar = models.ImageField(upload_to='avatars/', blank=True, null=True)
+    full_name = models.CharField(max_length=255, blank=True, null=True)
     role = models.CharField(max_length=20, choices=Roles.choices, default=Roles.USER)
     is_staff = models.BooleanField(default=False)
     is_active = models.BooleanField(default=True)
     is_superuser = models.BooleanField(default=False)
+    term_and_condition_accepted = models.BooleanField()
+    is_otp_verified = models.BooleanField(default=False)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
     ip_address = models.GenericIPAddressField(blank=True, null=True)
@@ -34,23 +37,22 @@ class User(AbstractBaseUser, PermissionsMixin):
 
 class UserProfile(models.Model):
     user = models.OneToOneField(User, on_delete=models.CASCADE, related_name='user_profile')
-    first_name = models.CharField(max_length=30, blank=True)
-    last_name = models.CharField(max_length=30, blank=True)
     phone = models.CharField(max_length=20, blank=True, null=True)
-    accepted_terms = models.BooleanField(default=False)
     dob = models.DateField(blank=True, null=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
 
     def __str__(self):
-        return f"{self.first_name} {self.last_name}" if self.first_name or self.last_name else self.user.email
+        return self.user.full_name if self.user.full_name else self.user.email
 
 
 PURPOSE = (
-    ('password_reset', 'Password Reset'),
+    ('create_account', 'Create Account'),
+    ('reset_password', 'Reset Password'),
     ('login', 'Login'),
     ('delete_account', 'Delete Account'),
-    ('account_create', 'Account Create')
+    ('update_email', 'Update Email'),
+    ('verify_email', 'Verify Email'),
 )
 
 class OTP(models.Model):
@@ -58,7 +60,7 @@ class OTP(models.Model):
     otp = models.CharField(max_length=255)
     is_verify = models.BooleanField(default=False)
     attempts = models.IntegerField(default=0)
-    purpose = models.CharField(max_length=50, blank=True, null=True, choices=PURPOSE) # login, password reset, 2fa etc
+    purpose = models.CharField(max_length=50, blank=True, null=True, choices=PURPOSE) 
     created_at = models.DateTimeField(auto_now_add=True)
     expires_at = models.DateTimeField()
 

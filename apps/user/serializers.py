@@ -14,40 +14,56 @@ from apps.utils.helpers import send_email, success, error
 from django.template.loader import render_to_string
 from .utils import get_user_agent_hash
 
+class CustomRefreshToken(RefreshToken):
+
+    @classmethod
+    def for_user(cls, user, remember_me=False, user_agent_hash=None):
+        token = super().for_user(user)
+
+        token["user_id"] = user.id
+        token["role"] = user.role
+        token["uah"] = user_agent_hash
+
+        if remember_me:
+            token.set_exp(lifetime=settings.SIMPLE_JWT["REFRESH_TOKEN_LIFETIME"] * 10)  
+        else:
+            token.set_exp(lifetime=settings.SIMPLE_JWT["REFRESH_TOKEN_LIFETIME"])
+
+        return token
 
 
 class SignUpSerializer(serializers.ModelSerializer):
-    first_name = serializers.CharField(required=False, allow_blank=True)
-    last_name = serializers.CharField(required=False, allow_blank=True)
+    full_name = serializers.CharField(required=False, allow_blank=True)
     email = serializers.EmailField()
     password = serializers.CharField(write_only=True)
     purpose = serializers.CharField(write_only=True)
+    role = serializers.CharField(required=False, default=User.Roles.USER)
+    term_and_condition_accepted = serializers.BooleanField(required=True)
 
     def validate(self, attrs):
         email = attrs.get('email')
+        term_and_condition_accepted = attrs.get('term_and_condition_accepted')
+        
         if User.objects.filter(email=email).exists():
             raise serializers.ValidationError({'email': 'User with this email already exists.'})
+        
+        if term_and_condition_accepted is not True:
+            raise serializers.ValidationError({'term_and_condition_accepted': 'You must accept the terms and conditions to proceed.'})
+        
         return attrs
 
     class Meta:
         model = User
-        fields = ['email', 'password', 'first_name', 'last_name', 'purpose']
+        fields = ['email', 'password', 'full_name', 'purpose', 'role', 'term_and_condition_accepted']
 
     def create(self, validated_data):
-        first_name = validated_data.pop('first_name', '')
-        last_name = validated_data.pop('last_name', '')
         email = validated_data.pop('email')
         password = validated_data.pop('password')
         purpose = validated_data.pop('purpose')
         
         user = User.objects.create_user(email=email, password=password, **validated_data)
-
-        UserProfile.objects.create(
-            user=user,
-            first_name=first_name,
-            last_name=last_name,
-        )
-
+        UserProfile.objects.create(user=user)
+        
 
         otp_code = generate_otp()
         otp_hashed = make_password(otp_code)
@@ -65,46 +81,32 @@ class SignUpSerializer(serializers.ModelSerializer):
             from_email=settings.EMAIL_HOST_USER,
             html_body=html_content
             )
-       
-
-
-
+    
         return user
     
-    def to_representation(self, instance):
-        return {
-            'id': instance.id,
-            'first_name': instance.user_profile.first_name,
-            'last_name': instance.user_profile.last_name,
-            'email': instance.email,
-        }
+  
 
 
-class CustomRefreshToken(RefreshToken):
-    @classmethod
-    def for_user(cls, user, user_agent_hash=None):
-        token = super().for_user(user)
-        # Add custom claims
-        token['id'] = user.id
-        token['role'] = user.role 
-        token['email'] = user.email
-        if user_agent_hash:
-            token['user_agent'] = user_agent_hash
-        return token
     
-
 class SignInSerializer(serializers.Serializer):
 
     email = serializers.EmailField()
     password = serializers.CharField(write_only=True)
     refresh_token = serializers.CharField(read_only=True)
     access_token = serializers.CharField(read_only=True)
+    remember_me = serializers.BooleanField(required=False, default=False)
 
     def validate(self, attrs):
         password = attrs.get('password')
         user = User.objects.filter(email=attrs['email']).first()
+
+        
         if not user:
            raise serializers.ValidationError({'email': 'User with this email does not exist.'})
+        
+        if not user.is_otp_verified:
+              raise serializers.ValidationError({'email': 'Email not verified. Please verify your email first.'})
+
         if not user.check_password(password):
             raise serializers.ValidationError({'password': 'Invalid password.'})
         self.user = user
@@ -112,14 +114,18 @@ class SignInSerializer(serializers.Serializer):
     
 
     def to_representation(self, instance):
-
         user = self.user
-        
         request = self.context.get('request')
+
+        remember_me = self.validated_data.get("remember_me", False)
         user_agent_hash = get_user_agent_hash(request) if request else None
 
+        refresh = CustomRefreshToken.for_user(
+            user,
+            remember_me=remember_me,
+            user_agent_hash=user_agent_hash
+        )
 
-        refresh = CustomRefreshToken.for_user(user, user_agent_hash=user_agent_hash) 
         return {
             'user': {
                 'id': user.id,
@@ -127,9 +133,9 @@ class SignInSerializer(serializers.Serializer):
                 'role': user.role,
             },
             'refresh': str(refresh),
-            'access': str(refresh.access_token)
+            'access': str(refresh.access_token),
+            'remember_me': remember_me
         }
-    
         
 
 
@@ -162,6 +168,7 @@ class SignOutSerializer(serializers.Serializer):
                      pass 
         except Exception as e:
             return ValidationError({'error': str(e)})
+        
 
 class ChangePasswordSerializer(serializers.Serializer):
     old_password = serializers.CharField(write_only=True)
@@ -322,22 +329,45 @@ class VerifyOTPSerializer(serializers.Serializer):
         self.user = user
         self.otp_obj = otp_obj
         return data
+    
+
+    def to_representation(self, instance):
+        user = self.user
+        request = self.context.get('request')
+
+        user_agent_hash = get_user_agent_hash(request) if request else None
+
+        refresh = CustomRefreshToken.for_user(
+            user,
+            user_agent_hash=user_agent_hash
+        )
+
+        return {
+            'user': {
+                'id': user.id,
+                'email': user.email,
+                'role': user.role,
+            },
+            'refresh': str(refresh),
+            'access': str(refresh.access_token),
+        }
+
 
     def save(self):
         self.otp_obj.is_verify = True
+        self.user.is_otp_verified = True
         self.otp_obj.attempts = 0
         self.otp_obj.save()
+        self.user.save()
 
 class ResetPasswordSerializer(serializers.Serializer):
     email = serializers.EmailField()
-    otp = serializers.CharField(max_length=6)
     purpose = serializers.CharField()
     new_password = serializers.CharField(write_only=True)
     confirm_password = serializers.CharField(write_only=True)
 
     def validate(self, data):
         email = data['email']
-        otp = data['otp']
         purpose = data['purpose']
         new_password = data['new_password']
         confirm_password = data['confirm_password']
@@ -351,9 +381,6 @@ class ResetPasswordSerializer(serializers.Serializer):
         if otp_obj.is_expired():
             otp_obj.delete()
             raise serializers.ValidationError({'error': "OTP has expired."})
-
-        if not otp_obj.check_otp(otp):
-            raise serializers.ValidationError({'error': "Incorrect OTP."})
         
         if not otp_obj.is_verify:
             raise serializers.ValidationError({'error': 'OTP not verified yet. Please verify OTP first.'})
@@ -403,19 +430,5 @@ class UserSerializer(serializers.ModelSerializer):
         ]
 
 
-# UserProfile
-class UserProfileSerializer(serializers.ModelSerializer):
 
-    class Meta:
-        model = UserProfile
-        fields = [
-            "user",
-            "first_name",
-            "last_name",
-            "phone",
-            "accepted_terms",
-            "dob",
-            "created_at",
-            "updated_at",
-        ]
 
